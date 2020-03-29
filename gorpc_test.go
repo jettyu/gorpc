@@ -164,7 +164,7 @@ func TestServerClient(t *testing.T) {
 	c, s := NewTestConn()
 	defer c.Close()
 	client := NewClientWithCodec(newTestClientCodec(c, json.NewDecoder(c), json.NewEncoder(c)))
-	handlers := NewHandlerManager()
+	handlers := NewHandlers()
 	server := NewServerWithCodec(handlers, newTestServerCodec(s, json.NewDecoder(s), json.NewEncoder(s)), nil)
 	count := int32(0)
 	handlers.Register("incr", func(i int32, res *int32) error {
@@ -214,12 +214,16 @@ func (p *testDualCodec) ReadHeader(head Header) (err error) {
 }
 
 func TestSession(t *testing.T) {
-	handlers := NewHandlerManager()
-	handlers.Register("incr", func(i int32, res *int32, ctx interface{}) error {
-		atomic.AddInt32(ctx.(*int32), i)
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	handlers := NewHandlers()
+	e := handlers.Register("incr", func(i int32, res *int32, ctx *int32) error {
+		atomic.AddInt32(ctx, i)
 		*res = i
 		return nil
 	})
+	if e != nil {
+		t.Fatal(e)
+	}
 	handlers.Register("count", func(i int32, resp ResponseWriter, ctx interface{}) error {
 		defer resp.Free()
 		resp.Reply(atomic.LoadInt32(ctx.(*int32)))

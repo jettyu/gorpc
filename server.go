@@ -19,7 +19,6 @@ type Server interface {
 	Serve()
 	ServeRequest() error
 	ReadFunction(*ServerFunction) error
-	SetContext(interface{})
 }
 
 // ServerFunction ...
@@ -61,7 +60,7 @@ func (p *ServerFunction) Call() {
 }
 
 // NewServerWithCodec ...
-func NewServerWithCodec(handlerManager *HandlerManager, codec ServerCodec, ctx interface{}) Server {
+func NewServerWithCodec(handlerManager *Handlers, codec ServerCodec, ctx interface{}) Server {
 	return newServerWithCodec(handlerManager, codec, ctx)
 }
 
@@ -70,7 +69,7 @@ func NewServerWithCodec(handlerManager *HandlerManager, codec ServerCodec, ctx i
 var typeOfError = reflect.TypeOf((*error)(nil)).Elem()
 
 type server struct {
-	*HandlerManager
+	*Handlers
 	codec              ServerCodec
 	ctx                reflect.Value
 	responsePool       *sync.Pool
@@ -78,10 +77,10 @@ type server struct {
 	responseWriterPool *sync.Pool
 }
 
-func newServerWithCodec(handlerManager *HandlerManager, codec ServerCodec, ctx interface{}) *server {
+func newServerWithCodec(handlers *Handlers, codec ServerCodec, ctx interface{}) *server {
 	s := &server{
-		HandlerManager: handlerManager,
-		codec:          codec,
+		Handlers: handlers,
+		codec:    codec,
 		responsePool: &sync.Pool{
 			New: func() interface{} {
 				return &header{}
@@ -95,12 +94,12 @@ func newServerWithCodec(handlerManager *HandlerManager, codec ServerCodec, ctx i
 	}
 	if ctx != nil {
 		s.ctx = reflect.ValueOf(ctx)
+		e := handlers.CheckContext(s.ctx.Type())
+		if e != nil {
+			panic(e)
+		}
 	}
 	return s
-}
-
-func (p *server) SetContext(v interface{}) {
-	p.ctx = reflect.ValueOf(v)
 }
 
 func (p *server) Serve() {

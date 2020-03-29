@@ -1,28 +1,58 @@
+/*
+	Package gorpc provides access to the exported methods of an object across a
+	network or other I/O connection.  A server registers an object, making it visible
+	as a service with the name of the type of the object.  After registration, exported
+	methods of the object will be accessible remotely.  A server may register multiple
+	objects (services) of different types but it is an error to register multiple
+	objects of the same type.
+
+		- the method has two or three arguments, both exported (or builtin) types.
+		- the method's second argument is a pointer.
+		- the method has return type error.
+		- if the function has three arguments, the thirst argument is interface{}
+
+	In effect, the method must look schematically like
+
+		func (t *T) MethodName(argType T1, replyType *T2) error
+	or
+		func (t *T) MethodName(argType T1, replyType *T2, ctx interface{}) error
+	or
+		func (t *T) MethodName(argType T1, ResponseWriter *T2) error
+	or
+		func (t *T) MethodName(argType T1, ResponseWriter *T2, ctx interface{}) error
+
+	The method's first argument represents the arguments provided by the caller; the
+	second argument represents the result parameters to be returned to the caller.
+	The method's return value, if non-nil, is passed back as a string that the client
+	sees as if created by errors.New.  If an error is returned, the reply parameter
+	will not be sent back to the client.
+*/
 package gorpc
 
 import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"reflect"
 	"unicode"
 	"unicode/utf8"
 )
 
-// HandlerManager ...
-type HandlerManager struct {
+// Handlers ...
+type Handlers struct {
 	handlers map[interface{}]*service
 }
 
-// NewHandlerManager ...
-func NewHandlerManager() *HandlerManager {
-	return &HandlerManager{
+// NewHandlers ...
+func NewHandlers() *Handlers {
+	return &Handlers{
 		handlers: make(map[interface{}]*service),
 	}
 }
 
 // Register ...
-func (p *HandlerManager) Register(serviceMethod interface{}, rcvr interface{}) error {
+func (p *Handlers) Register(serviceMethod interface{}, rcvr interface{}) error {
 	s, e := newService(rcvr)
 	if e != nil {
 		return e
@@ -31,21 +61,32 @@ func (p *HandlerManager) Register(serviceMethod interface{}, rcvr interface{}) e
 	return nil
 }
 
-func (p *HandlerManager) Has(serviceMethod interface{}) bool {
+func (p *Handlers) Has(serviceMethod interface{}) bool {
 	_, ok := p.handlers[serviceMethod]
 	return ok
 }
 
-func (p *HandlerManager) Del(serviceMethod interface{}) {
+func (p *Handlers) Del(serviceMethod interface{}) {
 	delete(p.handlers, serviceMethod)
 }
 
-func (p *HandlerManager) Range(f func(serviceMethod interface{}, rcvr reflect.Value) bool) {
+func (p *Handlers) Range(f func(serviceMethod interface{}, rcvr reflect.Value) bool) {
 	for k, v := range p.handlers {
 		if !f(k, v.rcvr) {
 			break
 		}
 	}
+}
+
+func (p *Handlers) CheckContext(ctx reflect.Type) (err error) {
+	for k, v := range p.handlers {
+		err = v.fType.checkContext(ctx)
+		if err != nil {
+			err = fmt.Errorf("[%w] method: %v", err, k)
+			break
+		}
+	}
+	return
 }
 
 type funcType struct {
@@ -99,6 +140,19 @@ func (p *funcType) call(argv, replyv, ctx reflect.Value) (reply interface{}, err
 	return
 }
 
+func (p *funcType) checkContext(ctx reflect.Type) (err error) {
+	if p.numIn < 3 {
+		return
+	}
+	mt := p.funcValue.Type().In(2)
+	if ctx.ConvertibleTo(mt) {
+		return
+	}
+	err = fmt.Errorf("[%w] context' type is %v, but funcType's 3d type is %v",
+		os.ErrInvalid, ctx, mt)
+	return
+}
+
 type service struct {
 	rcvr  reflect.Value // receiver of methods for the service
 	typ   reflect.Type  // type of the receiver
@@ -115,7 +169,6 @@ func newService(rcvr interface{}) (s *service, err error) {
 	sname := reflect.Indirect(s.rcvr).Type().Name()
 	if err != nil {
 		str := "rpc.Register: type " + sname + " not suitable type"
-		log.Print(str)
 		err = errors.New(str)
 		return
 	}
@@ -132,15 +185,15 @@ func suitableFuncValue(funcValue reflect.Value, reportErr bool) (ft *funcType, e
 		}
 		return
 	}
-	if mtype.NumIn() == 3 {
-		if mtype.In(2).Kind() != reflect.Interface {
-			err = fmt.Errorf("rpc.Register: method %q's thirst input parameter must be interface{} ", mname)
-			if reportErr {
-				log.Println(err)
-			}
-			return
-		}
-	}
+	// if mtype.NumIn() == 3 {
+	// 	if mtype.In(2).Kind() != reflect.Interface {
+	// 		err = fmt.Errorf("rpc.Register: method %q's thirst input parameter must be interface{} ", mname)
+	// 		if reportErr {
+	// 			log.Println(err)
+	// 		}
+	// 		return
+	// 	}
+	// }
 	// First arg need not be a pointer.
 	argType := mtype.In(0)
 	if !isExportedOrBuiltinType(argType) {
