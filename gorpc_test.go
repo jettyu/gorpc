@@ -3,11 +3,10 @@ package gorpc
 import (
 	"encoding/json"
 	"io"
+	"log"
 	"sync"
 	"sync/atomic"
 	"testing"
-
-	"gomod/github.com/lunny/log"
 )
 
 type testReq struct {
@@ -144,7 +143,7 @@ func testServerClient(t *testing.T, client Client, count *int32) {
 	wg.Add(1)
 	arg := int32(1)
 	res := int32(0)
-	client.CallAsync("incr", arg, &res, func(*Call) {
+	client.CallAsync("incr", arg, &res, func(error) {
 		defer wg.Done()
 		if arg != res {
 			t.Error(arg, res)

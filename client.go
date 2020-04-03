@@ -14,7 +14,7 @@ type Call struct {
 	Args   interface{} // The argument to the function (*struct).
 	Reply  interface{} // The reply from the function (*struct).
 	Done   chan *Call  // Strobes when call is complete.
-	cb     func(*Call)
+	cb     func(error)
 }
 
 func (p *Call) String() string {
@@ -43,7 +43,7 @@ type Client interface {
 	Close() error
 	Go(serviceMethod, args interface{}, reply interface{}, done chan *Call) *Call
 	Call(serviceMethod, args interface{}, reply interface{}) error
-	CallAsync(serviceMethod, args, reply interface{}, cb func(*Call))
+	CallAsync(serviceMethod, args, reply interface{}, cb func(error))
 	CallWithoutReply(serviceMethod, args interface{}) error
 	Wait()
 }
@@ -128,7 +128,7 @@ func (p *client) Call(serviceMethod, args, reply interface{}) error {
 	return call.Err()
 }
 
-func (p *client) CallAsync(serviceMethod, args, reply interface{}, cb func(*Call)) {
+func (p *client) CallAsync(serviceMethod, args, reply interface{}, cb func(error)) {
 	call := new(Call)
 	call.SetMethod(serviceMethod)
 	call.Args = args
@@ -259,7 +259,7 @@ func (call *Call) done() {
 	case call.Done <- call:
 		// ok
 		if call.cb != nil {
-			call.cb(call)
+			call.cb(call.Err())
 		}
 	default:
 		// We don't want to block here. It is the caller's responsibility to make
