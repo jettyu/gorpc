@@ -41,7 +41,7 @@ func (p *testClientCodec) Close() error {
 	return p.rwc.Close()
 }
 
-func (p *testClientCodec) Seq(head Header) (seq interface{}) {
+func (p *testClientCodec) GetSeq(head Header) (seq interface{}) {
 	seq = atomic.AddUint32(&p.seq, 1)
 	return
 }

@@ -33,7 +33,7 @@ func (p *Call) String() string {
 type ClientCodec interface {
 	ReadHeader(Header) error
 	ReadResponseBody(header Header, reply interface{}) error
-	Seq(Header) (seq interface{})
+	GetSeq(Header) (seq interface{})
 	WriteRequest(header Header, args interface{}) error
 	Close() error
 }
@@ -141,13 +141,13 @@ func (p *client) CallAsync(serviceMethod, args, reply interface{}, cb func(error
 func (p *client) CallWithoutReply(serviceMethod, args interface{}) error {
 	req := NewHeader()
 	req.SetMethod(serviceMethod)
-	req.SetSeq(p.codec.Seq(req))
+	req.SetSeq(p.codec.GetSeq(req))
 	return p.codec.WriteRequest(req, args)
 }
 
 func (p *client) send(call *Call) {
 	req := &call.header
-	seq := p.codec.Seq(req)
+	seq := p.codec.GetSeq(req)
 	req.SetSeq(seq)
 	// Register this call.
 	p.mutex.Lock()
