@@ -94,10 +94,6 @@ func newServerWithCodec(handlers *Handlers, codec ServerCodec, ctx interface{}) 
 	}
 	if ctx != nil {
 		s.ctx = reflect.ValueOf(ctx)
-		e := handlers.CheckContext(s.ctx.Type())
-		if e != nil {
-			panic(e)
-		}
 	}
 	return s
 }
