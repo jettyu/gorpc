@@ -37,7 +37,7 @@ func (p *sess) Client() Client {
 }
 
 func (p *sess) ServeRequest() (err error) {
-	head := p.getHeader()
+	head := p.getRequest()
 	for err == nil {
 		head.Reset()
 		err = p.codec.ReadHeader(head)
@@ -58,8 +58,8 @@ func (p *sess) ServeRequest() (err error) {
 	return
 }
 
-func (p *sess) ReadFunction(sf *ServerFunction) (err error) {
-	head := p.getHeader()
+func (p *sess) ReadFunction() (sf ServerFunction, err error) {
+	head := p.getRequest()
 	for err == nil {
 		head.Reset()
 		err = p.codec.ReadHeader(head)
@@ -70,7 +70,7 @@ func (p *sess) ReadFunction(sf *ServerFunction) (err error) {
 			err = p.client.dealResp(head)
 			continue
 		}
-		err = p.server.dealFunction(head, sf)
+		sf, err = p.server.dealFunction(head)
 		return
 	}
 	p.client.dealClose(err)
@@ -81,7 +81,7 @@ func (p *sess) Serve() {
 	var (
 		err error
 	)
-	head := p.getHeader()
+	head := p.getRequest()
 	for err == nil {
 		head.Reset()
 		err = p.codec.ReadHeader(head)

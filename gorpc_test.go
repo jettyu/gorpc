@@ -179,23 +179,23 @@ func TestServerClient(t *testing.T) {
 	testServerClient(t, client, &count)
 }
 
-type testDualCodec struct {
+type testSessionCodec struct {
 	*testClientCodec
 	*testServerCodec
 	buf json.RawMessage
 }
 
-func newTestSessionCodec(rwc io.ReadWriteCloser) *testDualCodec {
+func newTestSessionCodec(rwc io.ReadWriteCloser) *testSessionCodec {
 	de := json.NewDecoder(rwc)
 	en := json.NewEncoder(rwc)
-	return &testDualCodec{
+	return &testSessionCodec{
 		testClientCodec: newTestClientCodec(rwc, de, en),
 		testServerCodec: newTestServerCodec(rwc, de, en),
 	}
 }
 
 // ReadHeader ...
-func (p *testDualCodec) ReadHeader(head Header) (err error) {
+func (p *testSessionCodec) ReadHeader(head Header) (err error) {
 	p.buf = p.buf[:0]
 	var data testReq
 	data.Data = &p.buf
@@ -249,4 +249,36 @@ func TestSession(t *testing.T) {
 		testServerClient(t, server, &scount)
 	}()
 	wg.Wait()
+}
+
+func TestServerFunction(t *testing.T) {
+	c, s := NewTestConn()
+	defer c.Close()
+	client := NewClientWithCodec(newTestClientCodec(c, json.NewDecoder(c), json.NewEncoder(c)))
+	handlers := NewHandlers()
+	server := NewServerWithCodec(handlers, newTestServerCodec(s, json.NewDecoder(s), json.NewEncoder(s)), nil)
+	count := int32(0)
+	handlers.Register("incr", func(i int32, res *int32) error {
+		atomic.AddInt32(&count, i)
+		*res = i
+		return nil
+	})
+	handlers.Register("count", func(int32, res *int32) error {
+		*res = atomic.LoadInt32(&count)
+		return nil
+	})
+	go func() {
+		for {
+			f, e := server.ReadFunction()
+			if e != nil {
+				if e != io.EOF {
+					t.Error(e)
+				}
+				return
+			}
+			f.Call()
+			f.Free()
+		}
+	}()
+	testServerClient(t, client, &count)
 }

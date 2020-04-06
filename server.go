@@ -18,16 +18,8 @@ type ServerCodec interface {
 type Server interface {
 	Serve()
 	ServeRequest() error
-	ReadFunction(*ServerFunction) error
-}
-
-// ServerFunction ...
-type ServerFunction struct {
-	server   *server
-	funcType *funcType
-	argv     reflect.Value
-	replyv   reflect.Value
-	rsp      *header
+	ReadFunction() (ServerFunction, error)
+	SetContext(interface{})
 }
 
 type ResponseWriter interface {
@@ -36,27 +28,27 @@ type ResponseWriter interface {
 	Reply(interface{}) error
 }
 
-// Response ...
-type Response struct {
-	*header
-	server *server
+type ServerFunction interface {
+	Call()
+	Free()
 }
 
-// Free ...
-func (p *Response) Free() {
-	p.server.freeResponse(p.header)
+// serverFunction ...
+type serverFunction struct {
+	server   *server
+	funcType *funcType
+	argv     reflect.Value
+	replyv   reflect.Value
+	rsp      *header
 }
-
-// Reply ...
-func (p *Response) Reply(reply interface{}) error {
-	return p.server.sendResponse(p.header, reply, false)
-}
-
-var responseWriterType = reflect.TypeOf(&Response{})
 
 // Call ...
-func (p *ServerFunction) Call() {
+func (p *serverFunction) Call() {
 	p.server.call(p.funcType, p.rsp, p.argv, p.replyv)
+}
+
+func (p *serverFunction) Free() {
+	p.server.freeFunction(p)
 }
 
 // NewServerWithCodec ...
@@ -75,6 +67,7 @@ type server struct {
 	responsePool       *sync.Pool
 	request            header
 	responseWriterPool *sync.Pool
+	funcPool           *sync.Pool
 }
 
 func newServerWithCodec(handlers *Handlers, codec ServerCodec, ctx interface{}) *server {
@@ -91,6 +84,11 @@ func newServerWithCodec(handlers *Handlers, codec ServerCodec, ctx interface{}) 
 				return &Response{}
 			},
 		},
+		funcPool: &sync.Pool{
+			New: func() interface{} {
+				return &serverFunction{}
+			},
+		},
 	}
 	if ctx != nil {
 		s.ctx = reflect.ValueOf(ctx)
@@ -98,11 +96,15 @@ func newServerWithCodec(handlers *Handlers, codec ServerCodec, ctx interface{}) 
 	return s
 }
 
+func (p *server) SetContext(ctx interface{}) {
+	p.ctx = reflect.ValueOf(ctx)
+}
+
 func (p *server) Serve() {
 	var (
 		err error
 	)
-	request := p.getHeader()
+	request := p.getRequest()
 	for err == nil {
 		request.Reset()
 		err = p.codec.ReadHeader(request)
@@ -114,7 +116,7 @@ func (p *server) Serve() {
 }
 
 func (p *server) ServeRequest() (err error) {
-	request := p.getHeader()
+	request := p.getRequest()
 	err = p.codec.ReadHeader(request)
 	if err != nil {
 		return
@@ -123,13 +125,21 @@ func (p *server) ServeRequest() (err error) {
 	return
 }
 
-func (p *server) ReadFunction(sf *ServerFunction) (err error) {
-	request := p.getHeader()
+func (p *server) ReadFunction() (sf ServerFunction, err error) {
+	request := p.getRequest()
 	err = p.codec.ReadHeader(request)
 	if err != nil {
 		return
 	}
-	err = p.dealFunction(request, sf)
+	var f *serverFunction
+	f, err = p.dealFunction(request)
+	if err != nil {
+		if f != nil {
+			f.Free()
+		}
+		return
+	}
+	sf = f
 	return
 }
 
@@ -162,15 +172,19 @@ func (p *server) sendResponse(rsp *header, reply interface{}, withFree bool) err
 	return e
 }
 
-func (p *server) getHeader() *header {
+func (p *server) getRequest() *header {
 	return &p.request
 }
 
-func (p *server) getFunction() *ServerFunction {
-	return &ServerFunction{}
+func (p *server) getFunction() *serverFunction {
+	return p.funcPool.Get().(*serverFunction)
 }
 
-func (p *server) dealFunction(req *header, sf *ServerFunction) (err error) {
+func (p *server) freeFunction(f *serverFunction) {
+	p.funcPool.Put(f)
+}
+
+func (p *server) dealFunction(req *header) (sf *serverFunction, err error) {
 	rsp := p.getResponse()
 	rsp.SetSeq(req.Seq())
 	rsp.SetMethod(req.Method())
@@ -189,6 +203,8 @@ func (p *server) dealFunction(req *header, sf *ServerFunction) (err error) {
 		p.sendResponse(rsp, nil, true)
 		return
 	}
+	sf = p.getFunction()
+	sf.server = p
 	sf.funcType = s.fType
 	mtype := s.fType
 	sf.argv, err = p.getHeaderBody(req, mtype)
@@ -266,3 +282,21 @@ func (p *server) call(mtype *funcType, rsp *header, argv, replyv reflect.Value) 
 	}
 	p.sendResponse(rsp, reply, true)
 }
+
+// Response ...
+type Response struct {
+	*header
+	server *server
+}
+
+// Free ...
+func (p *Response) Free() {
+	p.server.freeResponse(p.header)
+}
+
+// Reply ...
+func (p *Response) Reply(reply interface{}) error {
+	return p.server.sendResponse(p.header, reply, false)
+}
+
+var responseWriterType = reflect.TypeOf(&Response{})
