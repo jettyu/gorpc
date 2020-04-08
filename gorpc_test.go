@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"log"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -164,7 +165,7 @@ func TestServerClient(t *testing.T) {
 	defer c.Close()
 	client := NewClientWithCodec(newTestClientCodec(c, json.NewDecoder(c), json.NewEncoder(c)))
 	handlers := NewHandlers()
-	server := NewServerWithCodec(handlers, newTestServerCodec(s, json.NewDecoder(s), json.NewEncoder(s)), nil)
+	server := NewServerWithCodec(handlers, newTestServerCodec(s, json.NewDecoder(s), json.NewEncoder(s)))
 	count := int32(0)
 	handlers.Register("incr", func(i int32, res *int32) error {
 		atomic.AddInt32(&count, i)
@@ -233,8 +234,16 @@ func TestSession(t *testing.T) {
 	defer s.Close()
 	ccount := int32(0)
 	scount := int32(0)
-	client := NewSessionWithCodec(newTestSessionCodec(c), handlers, &ccount)
-	server := NewSessionWithCodec(newTestSessionCodec(s), handlers, &scount)
+	clientCtx := reflect.ValueOf(&ccount)
+	serverCtx := reflect.ValueOf(&scount)
+	client := NewSessionWithCodec(newTestSessionCodec(c), handlers)
+	client.SetContextHandler(ServerContextHandlerFunc(func(Header) reflect.Value {
+		return clientCtx
+	}))
+	server := NewSessionWithCodec(newTestSessionCodec(s), handlers)
+	server.SetContextHandler(ServerContextHandlerFunc(func(Header) reflect.Value {
+		return serverCtx
+	}))
 	go server.Serve()
 	go client.Serve()
 	var wg sync.WaitGroup
@@ -256,7 +265,7 @@ func TestServerFunction(t *testing.T) {
 	defer c.Close()
 	client := NewClientWithCodec(newTestClientCodec(c, json.NewDecoder(c), json.NewEncoder(c)))
 	handlers := NewHandlers()
-	server := NewServerWithCodec(handlers, newTestServerCodec(s, json.NewDecoder(s), json.NewEncoder(s)), nil)
+	server := NewServerWithCodec(handlers, newTestServerCodec(s, json.NewDecoder(s), json.NewEncoder(s)))
 	count := int32(0)
 	handlers.Register("incr", func(i int32, res *int32) error {
 		atomic.AddInt32(&count, i)

@@ -13,8 +13,8 @@ type Session interface {
 	Client
 }
 
-func NewSessionWithCodec(codec SessionCodec, handlers *Handlers, ctx interface{}) Session {
-	return newSessionWithCodec(codec, handlers, ctx)
+func NewSessionWithCodec(codec SessionCodec, handlers *Handlers) Session {
+	return newSessionWithCodec(codec, handlers)
 }
 
 type sess struct {
@@ -23,11 +23,11 @@ type sess struct {
 	*server
 }
 
-func newSessionWithCodec(codec SessionCodec, handlers *Handlers, ctx interface{}) *sess {
+func newSessionWithCodec(codec SessionCodec, handlers *Handlers) *sess {
 	s := &sess{
 		codec:  codec,
 		client: newClientWithCodec(codec),
-		server: newServerWithCodec(handlers, codec, ctx),
+		server: newServerWithCodec(handlers, codec),
 	}
 	return s
 }

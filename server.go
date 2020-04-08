@@ -14,12 +14,22 @@ type ServerCodec interface {
 	WriteResponse(header Header, reply interface{}) error
 }
 
+type ServerContextHandler interface {
+	GetServerContext(Header) reflect.Value
+}
+
+type ServerContextHandlerFunc func(Header) reflect.Value
+
+func (p ServerContextHandlerFunc) GetServerContext(h Header) reflect.Value {
+	return p(h)
+}
+
 // Server ...
 type Server interface {
 	Serve()
 	ServeRequest() error
 	ReadFunction() (ServerFunction, error)
-	SetContext(interface{})
+	SetContextHandler(ServerContextHandler)
 }
 
 type ResponseWriter interface {
@@ -52,8 +62,8 @@ func (p *serverFunction) Free() {
 }
 
 // NewServerWithCodec ...
-func NewServerWithCodec(handlerManager *Handlers, codec ServerCodec, ctx interface{}) Server {
-	return newServerWithCodec(handlerManager, codec, ctx)
+func NewServerWithCodec(handlerManager *Handlers, codec ServerCodec) Server {
+	return newServerWithCodec(handlerManager, codec)
 }
 
 // Precompute the reflect type for error. Can't use error directly
@@ -63,14 +73,14 @@ var typeOfError = reflect.TypeOf((*error)(nil)).Elem()
 type server struct {
 	*Handlers
 	codec              ServerCodec
-	ctx                reflect.Value
+	contextHandler     ServerContextHandler
 	responsePool       *sync.Pool
 	request            header
 	responseWriterPool *sync.Pool
 	funcPool           *sync.Pool
 }
 
-func newServerWithCodec(handlers *Handlers, codec ServerCodec, ctx interface{}) *server {
+func newServerWithCodec(handlers *Handlers, codec ServerCodec) *server {
 	s := &server{
 		Handlers: handlers,
 		codec:    codec,
@@ -90,14 +100,12 @@ func newServerWithCodec(handlers *Handlers, codec ServerCodec, ctx interface{}) 
 			},
 		},
 	}
-	if ctx != nil {
-		s.ctx = reflect.ValueOf(ctx)
-	}
+
 	return s
 }
 
-func (p *server) SetContext(ctx interface{}) {
-	p.ctx = reflect.ValueOf(ctx)
+func (p *server) SetContextHandler(h ServerContextHandler) {
+	p.contextHandler = h
 }
 
 func (p *server) Serve() {
@@ -273,7 +281,11 @@ func (p *server) getReplyv(rsp *header, mtype *funcType) (replyv reflect.Value) 
 }
 
 func (p *server) call(mtype *funcType, rsp *header, argv, replyv reflect.Value) {
-	reply, err := mtype.call(argv, replyv, p.ctx)
+	var ctx reflect.Value
+	if mtype.numIn == 3 && p.contextHandler != nil {
+		ctx = p.contextHandler.GetServerContext(rsp)
+	}
+	reply, err := mtype.call(argv, replyv, ctx)
 	if mtype.noReply {
 		return
 	}

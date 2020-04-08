@@ -185,15 +185,7 @@ func suitableFuncValue(funcValue reflect.Value, reportErr bool) (ft *funcType, e
 		}
 		return
 	}
-	// if mtype.NumIn() == 3 {
-	// 	if mtype.In(2).Kind() != reflect.Interface {
-	// 		err = fmt.Errorf("rpc.Register: method %q's thirst input parameter must be interface{} ", mname)
-	// 		if reportErr {
-	// 			log.Println(err)
-	// 		}
-	// 		return
-	// 	}
-	// }
+
 	// First arg need not be a pointer.
 	argType := mtype.In(0)
 	if !isExportedOrBuiltinType(argType) {
