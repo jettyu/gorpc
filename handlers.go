@@ -222,11 +222,6 @@ func suitableFuncValue(funcValue reflect.Value, reportErr bool) (ft *funcType, e
 	return
 }
 
-// A value sent as a placeholder for the server's response value when the server
-// receives an invalid request. It is never decoded by the client since the Response
-// contains an error when it is used.
-var invalidRequest = struct{}{}
-
 // Is this type exported or a builtin?
 func isExportedOrBuiltinType(t reflect.Type) bool {
 	for t.Kind() == reflect.Ptr {

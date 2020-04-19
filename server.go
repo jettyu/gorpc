@@ -78,6 +78,7 @@ type server struct {
 	request            header
 	responseWriterPool *sync.Pool
 	funcPool           *sync.Pool
+	*client
 }
 
 func newServerWithCodec(handlers *Handlers, codec ServerCodec) *server {
@@ -112,42 +113,66 @@ func (p *server) Serve() {
 	var (
 		err error
 	)
-	request := p.getRequest()
+	head := p.getRequest()
 	for err == nil {
-		request.Reset()
-		err = p.codec.ReadHeader(request)
+		head.Reset()
+		err = p.codec.ReadHeader(head)
 		if err != nil {
 			break
 		}
-		err = p.dealRequestBody(request, false)
+		if p.client != nil && !head.IsRequest() {
+			err = p.client.dealResp(head)
+			continue
+		}
+		err = p.dealRequestBody(head, false)
+	}
+	if p.client != nil {
+		p.client.dealClose(err)
 	}
 }
 
 func (p *server) ServeRequest() (err error) {
-	request := p.getRequest()
-	err = p.codec.ReadHeader(request)
-	if err != nil {
+	head := p.getRequest()
+	for err == nil {
+		head.Reset()
+		err = p.codec.ReadHeader(head)
+		if err != nil {
+			break
+		}
+		if p.client != nil && !head.IsRequest() {
+			err = p.client.dealResp(head)
+			if err != nil {
+				break
+			}
+			continue
+		}
+		err = p.dealRequestBody(head, true)
 		return
 	}
-	err = p.dealRequestBody(request, true)
+	if p.client != nil {
+		p.client.dealClose(err)
+	}
 	return
 }
 
 func (p *server) ReadFunction() (sf ServerFunction, err error) {
-	request := p.getRequest()
-	err = p.codec.ReadHeader(request)
-	if err != nil {
-		return
-	}
-	var f *serverFunction
-	f, err = p.dealFunction(request)
-	if err != nil {
-		if f != nil {
-			f.Free()
+	head := p.getRequest()
+	for err == nil {
+		head.Reset()
+		err = p.codec.ReadHeader(head)
+		if err != nil {
+			break
 		}
+		if p.client != nil && !head.IsRequest() {
+			err = p.client.dealResp(head)
+			continue
+		}
+		sf, err = p.dealFunction(head)
 		return
 	}
-	sf = f
+	if p.client != nil {
+		p.client.dealClose(err)
+	}
 	return
 }
 
