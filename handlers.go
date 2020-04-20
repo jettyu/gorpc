@@ -238,12 +238,12 @@ func isExported(name string) bool {
 	return unicode.IsUpper(rune)
 }
 
-func isResponseWriter(t reflect.Type) bool {
+func IsResponseWriter(t reflect.Type) bool {
 	return responseWriterType.AssignableTo(t)
 }
 
 func isValidResponseType(replyType reflect.Type, mname string, reportErr bool) (noReply bool, err error) {
-	noReply = isResponseWriter(replyType)
+	noReply = IsResponseWriter(replyType)
 	if noReply {
 		return
 	}
