@@ -70,18 +70,18 @@ func (p *client) Wait() {
 // codec to encode requests and decode responses.
 func NewClientWithCodec(codec ClientCodec) Client {
 	p := newClientWithCodec(codec)
-
-	p.waited.Add(1)
 	go p.input()
 
 	return p
 }
 
 func newClientWithCodec(codec ClientCodec) *client {
-	return &client{
+	c := &client{
 		codec:   codec,
 		pending: make(map[interface{}]*Call),
 	}
+	c.waited.Add(1)
+	return c
 }
 
 // Close calls the underlying codec's Close method. If the connection is already
@@ -234,10 +234,10 @@ func (p *client) dealClose(err error) {
 	if debugLog && err != io.EOF && !closing {
 		log.Println("rpc: p protocol error:", err)
 	}
+	p.waited.Done()
 }
 
 func (p *client) input() {
-	defer p.waited.Done()
 	var err error
 	var response header
 	for err == nil {
