@@ -267,9 +267,9 @@ func TestServerFunction(t *testing.T) {
 	handlers := NewHandlers()
 	server := NewServerWithCodec(handlers, newTestServerCodec(s, json.NewDecoder(s), json.NewEncoder(s)))
 	count := int32(0)
-	handlers.Register("incr", func(i int32, res *int32) error {
-		atomic.AddInt32(&count, i)
-		*res = i
+	handlers.Register("incr", func(i *int32, res *int32) error {
+		atomic.AddInt32(&count, *i)
+		*res = *i
 		return nil
 	})
 	handlers.Register("count", func(int32, res *int32) error {

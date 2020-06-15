@@ -89,15 +89,43 @@ func (p *Handlers) CheckContext(ctx reflect.Type) (err error) {
 	return
 }
 
-type funcType struct {
-	funcValue reflect.Value
-	ArgType   reflect.Type
-	ReplyType reflect.Type
-	numIn     int
-	noReply   bool
+func (p *Handlers) RegisterCreator(serviceMethod interface{},
+	argvCreator ArgvCreator,
+	replyvCreator ReplyvCreator) bool {
+	svc, ok := p.handlers[serviceMethod]
+	if !ok {
+		return false
+	}
+	if argvCreator != nil {
+		svc.fType.ArgvCreator = argvCreator
+	}
+	if replyvCreator != nil {
+		svc.fType.ReplyvCreator = replyvCreator
+	}
+	return true
 }
 
-func (p *funcType) getArgv() (argv reflect.Value) {
+type ArgvCreatorFunc func() reflect.Value
+
+func (p ArgvCreatorFunc) getArgv() reflect.Value { return p() }
+
+type ReplyvCreatorFunc func() reflect.Value
+
+func (p ReplyvCreatorFunc) getReplyv() reflect.Value { return p() }
+
+type ArgvCreator interface {
+	getArgv() reflect.Value
+}
+
+type ReplyvCreator interface {
+	getReplyv() reflect.Value
+}
+
+type argvCreator struct {
+	ArgType reflect.Type
+}
+
+func (p *argvCreator) getArgv() (argv reflect.Value) {
 	// Decode the argument value.
 	if p.ArgType.Kind() == reflect.Ptr {
 		argv = reflect.New(p.ArgType.Elem())
@@ -107,7 +135,11 @@ func (p *funcType) getArgv() (argv reflect.Value) {
 	return
 }
 
-func (p *funcType) getReplyv() (replyv reflect.Value) {
+type replyvCreator struct {
+	ReplyType reflect.Type
+}
+
+func (p *replyvCreator) getReplyv() (replyv reflect.Value) {
 	replyv = reflect.New(p.ReplyType.Elem())
 	switch p.ReplyType.Elem().Kind() {
 	case reflect.Map:
@@ -118,9 +150,35 @@ func (p *funcType) getReplyv() (replyv reflect.Value) {
 	return
 }
 
+type funcType struct {
+	funcValue reflect.Value
+	argType   reflect.Type
+	ArgvCreator
+	ReplyvCreator
+	numIn   int
+	noReply bool
+}
+
+func newFuncType(funcValue reflect.Value,
+	argType, replyType reflect.Type,
+	numIn int, noReply bool) *funcType {
+	return &funcType{
+		funcValue: funcValue,
+		argType:   argType,
+		ArgvCreator: &argvCreator{
+			ArgType: argType,
+		},
+		ReplyvCreator: &replyvCreator{
+			ReplyType: replyType,
+		},
+		numIn:   numIn,
+		noReply: noReply,
+	}
+}
+
 func (p *funcType) call(argv, replyv, ctx reflect.Value) (reply interface{}, err error) {
 	// if true, need to indirect before calling.
-	if p.ArgType.Kind() != reflect.Ptr {
+	if p.argType.Kind() != reflect.Ptr {
 		argv = argv.Elem()
 	}
 	function := p.funcValue
@@ -155,13 +213,11 @@ func (p *funcType) checkContext(ctx reflect.Type) (err error) {
 
 type service struct {
 	rcvr  reflect.Value // receiver of methods for the service
-	typ   reflect.Type  // type of the receiver
 	fType *funcType     // registered methods
 }
 
 func newService(rcvr interface{}) (s *service, err error) {
 	s = new(service)
-	s.typ = reflect.TypeOf(rcvr)
 	s.rcvr = reflect.ValueOf(rcvr)
 	// Install the methods
 	s.fType, err = suitableFuncValue(s.rcvr, false)
@@ -217,8 +273,7 @@ func suitableFuncValue(funcValue reflect.Value, reportErr bool) (ft *funcType, e
 		}
 		return
 	}
-
-	ft = &funcType{funcValue: funcValue, ArgType: argType, ReplyType: replyType, numIn: mtype.NumIn(), noReply: noReply}
+	ft = newFuncType(funcValue, argType, replyType, mtype.NumIn(), noReply)
 	return
 }
 
