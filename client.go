@@ -44,6 +44,7 @@ type Client interface {
 	Go(serviceMethod, args interface{}, reply interface{}, done chan *Call) *Call
 	Call(serviceMethod, args interface{}, reply interface{}) error
 	CallAsync(serviceMethod, args, reply interface{}, cb func(error))
+	CallAsyncWithCall(serviceMethod, args, reply interface{}, cb func(*Call))
 	CallWithoutReply(serviceMethod, args interface{}) error
 	Wait()
 }
