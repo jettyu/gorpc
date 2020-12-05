@@ -124,8 +124,7 @@ func (p *testServerCodec) WriteResponse(rsp Header, reply interface{}) (err erro
 	return
 }
 
-func testServerClient(t *testing.T, client Client, count *int32) {
-	atomic.StoreInt32(count, 0)
+func testServerClient(t *testing.T, client Client) {
 	var wg sync.WaitGroup
 	for i := 0; i < 3; i++ {
 		wg.Add(1)
@@ -146,7 +145,7 @@ func testServerClient(t *testing.T, client Client, count *int32) {
 	wg.Wait()
 	e := client.Call("count", 0, &res)
 	assert.NoError(t, e)
-	assert.Equal(t, int32(4), res, atomic.LoadInt32(count))
+	assert.Equal(t, int32(4), res)
 }
 
 func TestServerClient(t *testing.T) {
@@ -168,7 +167,7 @@ func TestServerClient(t *testing.T) {
 	})
 	assert.NoError(t, err)
 	go server.Serve()
-	testServerClient(t, client, &count)
+	testServerClient(t, client)
 }
 
 type testSessionCodec struct {
@@ -204,26 +203,50 @@ func (p *testSessionCodec) ReadHeader(head Header) (err error) {
 	return
 }
 
+type atomicInt struct {
+	i int32
+	// sync.RWMutex
+}
+
+func (p *atomicInt) Add(i int32) int32 {
+	// p.Lock()
+	// defer p.Unlock()
+	// p.i += i
+	// return p.i
+	return atomic.AddInt32(&p.i, i)
+}
+
+func (p *atomicInt) Load() int32 {
+	// p.RLock()
+	// defer p.RUnlock()
+	// return p.i
+	return atomic.LoadInt32(&p.i)
+}
+
 func TestSession(t *testing.T) {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	handlers := NewHandlers()
 	err := handlers.Register("incr", func(i int32, res *int32, ctx *int32) error {
+		// *res = ctx.Add(i)
 		*res = atomic.AddInt32(ctx, i)
 		return nil
 	})
 	assert.NoError(t, err)
 	err = handlers.Register("count", func(i int32, resp ResponseWriter, ctx interface{}) error {
 		defer resp.Free()
+		// return resp.Reply(ctx.(*atomicInt).Load())
 		return resp.Reply(atomic.LoadInt32(ctx.(*int32)))
 	})
 	assert.NoError(t, err)
 	c, s := NewTestConn()
 	defer c.Close()
 	defer s.Close()
-	ccount := int32(0)
-	scount := int32(0)
-	clientCtx := reflect.ValueOf(&ccount)
-	serverCtx := reflect.ValueOf(&scount)
+	// ccount := &atomicInt{}
+	// scount := &atomicInt{}
+	ccount := new(int32)
+	scount := new(int32)
+	clientCtx := reflect.ValueOf(ccount)
+	serverCtx := reflect.ValueOf(scount)
 	client := NewSessionWithCodec(newTestSessionCodec(c), handlers)
 	client.SetContextHandler(ServerContextHandlerFunc(func(Header) reflect.Value {
 		return clientCtx
@@ -238,12 +261,12 @@ func TestSession(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		testServerClient(t, client, &ccount)
+		testServerClient(t, client)
 	}()
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		testServerClient(t, server, &scount)
+		testServerClient(t, server)
 	}()
 	wg.Wait()
 }
@@ -279,5 +302,5 @@ func TestServerFunction(t *testing.T) {
 			f.Free()
 		}
 	}()
-	testServerClient(t, client, &count)
+	testServerClient(t, client)
 }
