@@ -203,26 +203,6 @@ func (p *testSessionCodec) ReadHeader(head Header) (err error) {
 	return
 }
 
-type atomicInt struct {
-	i int32
-	// sync.RWMutex
-}
-
-func (p *atomicInt) Add(i int32) int32 {
-	// p.Lock()
-	// defer p.Unlock()
-	// p.i += i
-	// return p.i
-	return atomic.AddInt32(&p.i, i)
-}
-
-func (p *atomicInt) Load() int32 {
-	// p.RLock()
-	// defer p.RUnlock()
-	// return p.i
-	return atomic.LoadInt32(&p.i)
-}
-
 func TestSession(t *testing.T) {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	handlers := NewHandlers()
