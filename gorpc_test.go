@@ -8,6 +8,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 type testReq struct {
@@ -146,18 +148,14 @@ func testServerClient(t *testing.T, client Client, count *int32) {
 	res := int32(0)
 	client.CallAsync("incr", arg, &res, func(error) {
 		defer wg.Done()
-		if arg != res {
-			t.Error(arg, res)
-		}
+		assert.Equal(t, arg, res)
 	})
 	wg.Wait()
 	e := client.Call("count", 0, &res)
 	if e != nil {
 		t.Error(e)
 	}
-	if res != 4 {
-		t.Error(res, atomic.LoadInt32(count))
-	}
+	assert.Equal(t, int32(4), res, atomic.LoadInt32(count))
 }
 
 func TestServerClient(t *testing.T) {
@@ -167,15 +165,18 @@ func TestServerClient(t *testing.T) {
 	handlers := NewHandlers()
 	server := NewServerWithCodec(handlers, newTestServerCodec(s, json.NewDecoder(s), json.NewEncoder(s)))
 	count := int32(0)
-	handlers.Register("incr", func(i int32, res *int32) error {
+	var err error
+	err = handlers.Register("incr", func(i int32, res *int32) error {
 		atomic.AddInt32(&count, i)
 		*res = i
 		return nil
 	})
-	handlers.Register("count", func(int32, res *int32) error {
+	assert.NoError(t, err)
+	err = handlers.Register("count", func(int32, res *int32) error {
 		*res = atomic.LoadInt32(&count)
 		return nil
 	})
+	assert.NoError(t, err)
 	go server.Serve()
 	testServerClient(t, client, &count)
 }
@@ -216,19 +217,17 @@ func (p *testSessionCodec) ReadHeader(head Header) (err error) {
 func TestSession(t *testing.T) {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	handlers := NewHandlers()
-	e := handlers.Register("incr", func(i int32, res *int32, ctx *int32) error {
+	err := handlers.Register("incr", func(i int32, res *int32, ctx *int32) error {
 		atomic.AddInt32(ctx, i)
 		*res = i
 		return nil
 	})
-	if e != nil {
-		t.Fatal(e)
-	}
-	handlers.Register("count", func(i int32, resp ResponseWriter, ctx interface{}) error {
+	assert.NoError(t, err)
+	err = handlers.Register("count", func(i int32, resp ResponseWriter, ctx interface{}) error {
 		defer resp.Free()
-		resp.Reply(atomic.LoadInt32(ctx.(*int32)))
-		return nil
+		return resp.Reply(atomic.LoadInt32(ctx.(*int32)))
 	})
+	assert.NoError(t, err)
 	c, s := NewTestConn()
 	defer c.Close()
 	defer s.Close()
@@ -267,15 +266,18 @@ func TestServerFunction(t *testing.T) {
 	handlers := NewHandlers()
 	server := NewServerWithCodec(handlers, newTestServerCodec(s, json.NewDecoder(s), json.NewEncoder(s)))
 	count := int32(0)
-	handlers.Register("incr", func(i int32, res *int32) error {
+	var err error
+	err = handlers.Register("incr", func(i int32, res *int32) error {
 		atomic.AddInt32(&count, i)
 		*res = i
 		return nil
 	})
-	handlers.Register("count", func(int32, res *int32) error {
+	assert.NoError(t, err)
+	err = handlers.Register("count", func(int32, res *int32) error {
 		*res = atomic.LoadInt32(&count)
 		return nil
 	})
+	assert.NoError(t, err)
 	go func() {
 		for {
 			f, e := server.ReadFunction()
