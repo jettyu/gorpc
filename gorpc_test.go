@@ -134,13 +134,7 @@ func testServerClient(t *testing.T, client Client, count *int32) {
 			arg := int32(1)
 			res := int32(0)
 			err := client.Call("incr", arg, &res)
-			if err != nil {
-				t.Error(err)
-				return
-			}
-			if arg != res {
-				t.Error(arg, res)
-			}
+			assert.NoError(t, err)
 		}(i)
 	}
 	wg.Add(1)
@@ -148,13 +142,10 @@ func testServerClient(t *testing.T, client Client, count *int32) {
 	res := int32(0)
 	client.CallAsync("incr", arg, &res, func(error) {
 		defer wg.Done()
-		assert.Equal(t, arg, res)
 	})
 	wg.Wait()
 	e := client.Call("count", 0, &res)
-	if e != nil {
-		t.Error(e)
-	}
+	assert.NoError(t, e)
 	assert.Equal(t, int32(4), res, atomic.LoadInt32(count))
 }
 
@@ -167,8 +158,7 @@ func TestServerClient(t *testing.T) {
 	count := int32(0)
 	var err error
 	err = handlers.Register("incr", func(i int32, res *int32) error {
-		atomic.AddInt32(&count, i)
-		*res = i
+		*res = atomic.AddInt32(&count, i)
 		return nil
 	})
 	assert.NoError(t, err)
@@ -218,8 +208,7 @@ func TestSession(t *testing.T) {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	handlers := NewHandlers()
 	err := handlers.Register("incr", func(i int32, res *int32, ctx *int32) error {
-		atomic.AddInt32(ctx, i)
-		*res = i
+		*res = atomic.AddInt32(ctx, i)
 		return nil
 	})
 	assert.NoError(t, err)
@@ -268,8 +257,7 @@ func TestServerFunction(t *testing.T) {
 	count := int32(0)
 	var err error
 	err = handlers.Register("incr", func(i int32, res *int32) error {
-		atomic.AddInt32(&count, i)
-		*res = i
+		*res = atomic.AddInt32(&count, i)
 		return nil
 	})
 	assert.NoError(t, err)
