@@ -233,7 +233,10 @@ func (p *server) dealFunction(req *header) (sf *serverFunction, err error) {
 			p.freeResponse(rsp)
 			return
 		}
-		p.sendResponse(rsp, nil, true)
+		err = p.sendResponse(rsp, nil, true)
+		if err != nil && debugLog {
+			fmt.Println("sendResponse failed: ", err.Error())
+		}
 		return
 	}
 	sf = p.getFunction()
@@ -266,7 +269,10 @@ func (p *server) dealRequestBody(req *header, block bool) (err error) {
 			p.freeResponse(rsp)
 			return
 		}
-		p.sendResponse(rsp, nil, true)
+		err = p.sendResponse(rsp, nil, true)
+		if err != nil && debugLog {
+			fmt.Println("sendResponse failed: ", err.Error())
+		}
 		return
 	}
 	mtype := s.fType
@@ -317,7 +323,10 @@ func (p *server) call(mtype *funcType, rsp *header, argv, replyv reflect.Value) 
 	if err != nil {
 		rsp.SetErr(err)
 	}
-	p.sendResponse(rsp, reply, true)
+	err = p.sendResponse(rsp, reply, true)
+	if err != nil && debugLog {
+		fmt.Println("sendResponse failed: ", err.Error())
+	}
 }
 
 // Response ...
