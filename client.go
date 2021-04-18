@@ -66,6 +66,7 @@ type ClientWithContext interface {
 // Client ...
 type Client interface {
 	ClientWithContext
+	Go(serviceMethod, args interface{}, reply interface{}, done chan *Call) *Call
 	Call(serviceMethod, args interface{}, reply interface{}) error
 	CallAsync(serviceMethod, args, reply interface{}, cb func(error))
 }
