@@ -15,13 +15,36 @@ type ServerCodec interface {
 }
 
 type ServerContextHandler interface {
-	GetServerContext(Header) reflect.Value
+	GetServerContext(Header) interface{}
 }
 
 type ServerContextHandlerFunc func(Header) reflect.Value
 
-func (p ServerContextHandlerFunc) GetServerContext(h Header) reflect.Value {
+func (p ServerContextHandlerFunc) GetServerContext(h Header) interface{} {
+	return p(h).Interface()
+}
+
+type ServerContextFunc func(Header) interface{}
+
+func (p ServerContextFunc) GetServerContext(h Header) interface{} {
 	return p(h)
+}
+
+func NewServerContextHandler(ctx interface{}) ServerContextHandler {
+	if ctx == nil {
+		return nil
+	}
+	return &serverContextHandler{
+		ctx: reflect.ValueOf(ctx),
+	}
+}
+
+type serverContextHandler struct {
+	ctx interface{}
+}
+
+func (p *serverContextHandler) GetServerContext(Header) interface{} {
+	return p.ctx
 }
 
 // Server ...
@@ -45,16 +68,14 @@ type ServerFunction interface {
 
 // serverFunction ...
 type serverFunction struct {
-	server   *server
-	funcType *funcType
-	argv     reflect.Value
-	replyv   reflect.Value
-	rsp      *header
+	server *server
+	svc    Service
+	rsp    *header
 }
 
 // Call ...
 func (p *serverFunction) Call() {
-	p.server.call(p.funcType, p.rsp, p.argv, p.replyv)
+	p.server.call(p.rsp, p.svc)
 }
 
 func (p *serverFunction) Free() {
@@ -62,7 +83,7 @@ func (p *serverFunction) Free() {
 }
 
 // NewServerWithCodec ...
-func NewServerWithCodec(handlerManager *Handlers, codec ServerCodec) Server {
+func NewServerWithCodec(handlerManager ServiceManager, codec ServerCodec) Server {
 	return newServerWithCodec(handlerManager, codec)
 }
 
@@ -71,7 +92,7 @@ func NewServerWithCodec(handlerManager *Handlers, codec ServerCodec) Server {
 var typeOfError = reflect.TypeOf((*error)(nil)).Elem()
 
 type server struct {
-	*Handlers
+	handlers           ServiceManager
 	codec              ServerCodec
 	contextHandler     ServerContextHandler
 	responsePool       *sync.Pool
@@ -81,9 +102,9 @@ type server struct {
 	*client
 }
 
-func newServerWithCodec(handlers *Handlers, codec ServerCodec) *server {
+func newServerWithCodec(handlers ServiceManager, codec ServerCodec) *server {
 	s := &server{
-		Handlers: handlers,
+		handlers: handlers,
 		codec:    codec,
 		responsePool: &sync.Pool{
 			New: func() interface{} {
@@ -110,24 +131,9 @@ func (p *server) SetContextHandler(h ServerContextHandler) {
 }
 
 func (p *server) Serve() {
-	var (
-		err error
-	)
-	head := p.getRequest()
+	var err error
 	for err == nil {
-		head.Reset()
-		err = p.codec.ReadHeader(head)
-		if err != nil {
-			break
-		}
-		if p.client != nil && !head.IsRequest() {
-			err = p.client.dealResp(head)
-			continue
-		}
-		err = p.dealRequestBody(head, false)
-	}
-	if p.client != nil {
-		p.client.dealClose(err)
+		err = p.ServeRequest()
 	}
 }
 
@@ -137,16 +143,16 @@ func (p *server) ServeRequest() (err error) {
 		head.Reset()
 		err = p.codec.ReadHeader(head)
 		if err != nil {
-			break
+			continue
 		}
 		if p.client != nil && !head.IsRequest() {
 			err = p.client.dealResp(head)
-			if err != nil {
-				break
-			}
 			continue
 		}
-		err = p.dealRequestBody(head, true)
+		err = p.dealRequestBody(head, false)
+		if err != nil {
+			continue
+		}
 		return
 	}
 	if p.client != nil {
@@ -189,11 +195,11 @@ func (p *server) freeResponse(rsp *header) {
 	p.responsePool.Put(rsp)
 }
 
-func (p *server) getResponseWriter(rsp *header) reflect.Value {
+func (p *server) getResponseWriter(rsp *header) ResponseWriter {
 	w := p.responseWriterPool.Get().(*Response)
 	w.header = rsp
 	w.server = p
-	return reflect.ValueOf(w)
+	return w
 
 }
 
@@ -217,39 +223,47 @@ func (p *server) freeFunction(f *serverFunction) {
 	p.funcPool.Put(f)
 }
 
+func (p *server) getService(req, rsp *header) (s Service, ok bool, err error) {
+	s, ok = p.handlers.Get(req.Method())
+	if ok {
+		s = s.Clone()
+		return
+	}
+	err = fmt.Errorf("there is no handler for the method: %s, [%w]", req.Method(), os.ErrInvalid)
+	rsp.SetErr(err)
+	req.SetErr(err)
+	err = p.codec.ReadRequestBody(req, nil)
+	if err != nil {
+		p.freeResponse(rsp)
+		return
+	}
+	err = p.sendResponse(rsp, nil, true)
+	if err != nil && debugLog {
+		fmt.Println("sendResponse failed: ", err.Error())
+	}
+	return
+}
+
 func (p *server) dealFunction(req *header) (sf *serverFunction, err error) {
 	rsp := p.getResponse()
 	rsp.SetSeq(req.Seq())
 	rsp.SetMethod(req.Method())
 	rsp.SetContext(req.Context())
 
-	s, ok := p.handlers[req.Method()]
-	if !ok {
-		err = fmt.Errorf("there is no handler for the method: %s, [%w]", req.Method(), os.ErrInvalid)
-		rsp.SetErr(err)
-		req.SetErr(err)
-		err = p.codec.ReadRequestBody(req, nil)
-		if err != nil {
-			p.freeResponse(rsp)
-			return
-		}
-		err = p.sendResponse(rsp, nil, true)
-		if err != nil && debugLog {
-			fmt.Println("sendResponse failed: ", err.Error())
-		}
+	s, ok, err := p.getService(req, rsp)
+	if !ok || err != nil {
 		return
 	}
 	sf = p.getFunction()
 	sf.server = p
-	sf.funcType = s.fType
-	mtype := s.fType
-	sf.argv, err = p.getHeaderBody(req, mtype)
+	sf.svc = s
+	sf.rsp = rsp
+
+	err = p.getHeaderBody(req, s.GetArg())
 	if err != nil {
 		p.freeResponse(rsp)
 		return
 	}
-	sf.replyv = p.getReplyv(rsp, mtype)
-	sf.rsp = rsp
 	return
 }
 
@@ -259,73 +273,55 @@ func (p *server) dealRequestBody(req *header, block bool) (err error) {
 	rsp.SetMethod(req.Method())
 	rsp.SetContext(req.Context())
 
-	s, ok := p.handlers[req.Method()]
-	if !ok {
-		err = fmt.Errorf("there is no handler for the method: %s, [%w]", req.Method(), os.ErrInvalid)
-		rsp.SetErr(err)
-		req.SetErr(err)
-		err = p.codec.ReadRequestBody(req, nil)
-		if err != nil {
-			p.freeResponse(rsp)
-			return
-		}
-		err = p.sendResponse(rsp, nil, true)
-		if err != nil && debugLog {
-			fmt.Println("sendResponse failed: ", err.Error())
-		}
+	s, ok, err := p.getService(req, rsp)
+	if !ok || err != nil {
 		return
 	}
-	mtype := s.fType
-	argv, e := p.getHeaderBody(req, mtype)
+	e := p.getHeaderBody(req, s.GetArg())
 	if e != nil {
 		p.freeResponse(rsp)
 		err = e
 		return
 	}
-	replyv := p.getReplyv(rsp, mtype)
 	if block {
-		p.call(mtype, rsp, argv, replyv)
+		p.call(rsp, s)
 		return
 	}
-	go p.call(mtype, rsp, argv, replyv)
+	go p.call(rsp, s)
 	return
 }
 
-func (p *server) getHeaderBody(req *header, mtype *funcType) (argv reflect.Value, err error) {
+func (p *server) getHeaderBody(req *header, arg interface{}) (err error) {
 	// Decode the argument value.
-	argv = mtype.getArgv()
 	// argv guaranteed to be a pointer now.
-	if err = p.codec.ReadRequestBody(req, argv.Interface()); err != nil {
-		return
-	}
-
-	return
+	return p.codec.ReadRequestBody(req, arg)
 }
 
-func (p *server) getReplyv(rsp *header, mtype *funcType) (replyv reflect.Value) {
-	if mtype.noReply {
-		replyv = p.getResponseWriter(rsp)
+func (p *server) call(rsp *header, svc Service) {
+	sc, ok := svc.(ServiceWithContext)
+	if ok && p.contextHandler != nil {
+		sc.WithContext(p.contextHandler.GetServerContext(rsp))
+	}
+	sh, ok := svc.(ServiceWithHeader)
+	if ok {
+		sh.WithHeader(rsp)
+	}
+	ss, ok := svc.(SyncService)
+	if ok {
+		reply, err := ss.Do()
+		if err != nil {
+			rsp.SetErr(err)
+		}
+		err = p.sendResponse(rsp, reply, true)
+		if err != nil && debugLog {
+			fmt.Println("sendResponse failed: ", err.Error())
+		}
 		return
 	}
-	replyv = mtype.getReplyv()
-	return
-}
-
-func (p *server) call(mtype *funcType, rsp *header, argv, replyv reflect.Value) {
-	var ctx reflect.Value
-	if mtype.numIn == 3 && p.contextHandler != nil {
-		ctx = p.contextHandler.GetServerContext(rsp)
-	}
-	reply, err := mtype.call(argv, replyv, ctx)
-	if mtype.noReply {
+	as, ok := svc.(AsyncService)
+	if ok {
+		as.Do(p.getResponseWriter(rsp))
 		return
-	}
-	if err != nil {
-		rsp.SetErr(err)
-	}
-	err = p.sendResponse(rsp, reply, true)
-	if err != nil && debugLog {
-		fmt.Println("sendResponse failed: ", err.Error())
 	}
 }
 
