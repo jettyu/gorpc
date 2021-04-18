@@ -1,20 +1,25 @@
 package gorpc
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // Call represents an active RPC.
 type Call struct {
-	header             // Header
-	Args   interface{} // The argument to the function (*struct).
-	Reply  interface{} // The reply from the function (*struct).
-	Done   chan *Call  // Strobes when call is complete.
-	cb     func(*Call)
+	header               // Header
+	Args     interface{} // The argument to the function (*struct).
+	Reply    interface{} // The reply from the function (*struct).
+	Done     chan *Call  // Strobes when call is complete.
+	Callback func(context.Context, error)
+	doned    int32
+	ctx      context.Context
 }
 
 func (p *Call) String() string {
@@ -38,15 +43,31 @@ type ClientCodec interface {
 	Close() error
 }
 
+type HeadChecker interface {
+	CheckHeader(req, rsp Header) bool
+}
+
+func DoWithTimeout(ctx context.Context, d time.Duration, fn func(context.Context)) {
+	ctx, cancel := context.WithTimeout(ctx, d)
+	defer cancel()
+	fn(ctx)
+}
+
+type ClientWithContext interface {
+	Close() error
+	CallWithContext(ctx context.Context, serviceMethod, args, reply interface{}) error
+	CallAsyncWithContext(ctx context.Context, serviceMethod, args, reply interface{},
+		cb func(context.Context, error))
+	CallWithoutReply(serviceMethod, args interface{}) error
+	ForceClean(serviceMethod interface{}) bool
+	Wait()
+}
+
 // Client ...
 type Client interface {
-	Close() error
-	Go(serviceMethod, args interface{}, reply interface{}, done chan *Call) *Call
+	ClientWithContext
 	Call(serviceMethod, args interface{}, reply interface{}) error
 	CallAsync(serviceMethod, args, reply interface{}, cb func(error))
-	CallAsyncWithCall(serviceMethod, args, reply interface{}, cb func(*Call))
-	CallWithoutReply(serviceMethod, args interface{}) error
-	Wait()
 }
 
 // client represents an RPC client.
@@ -54,12 +75,13 @@ type Client interface {
 // with a single client, and a client may be used by
 // multiple goroutines simultaneously.
 type client struct {
-	codec    ClientCodec
-	mutex    sync.Mutex // protects following
-	pending  map[interface{}]*Call
-	closing  bool // user has called Close
-	shutdown bool // server has told us to stop
-	waited   sync.WaitGroup
+	codec       ClientCodec
+	mutex       sync.Mutex // protects following
+	pending     map[interface{}]*Call
+	closing     bool // user has called Close
+	shutdown    bool // server has told us to stop
+	headChecker HeadChecker
+	waited      sync.WaitGroup
 }
 
 // Wait ...
@@ -81,6 +103,7 @@ func newClientWithCodec(codec ClientCodec) *client {
 		codec:   codec,
 		pending: make(map[interface{}]*Call),
 	}
+	c.headChecker, _ = codec.(HeadChecker)
 	c.waited.Add(1)
 	return c
 }
@@ -98,6 +121,21 @@ func (p *client) Close() error {
 	return p.codec.Close()
 }
 
+func (p *client) SendCall(call *Call) {
+	if call.Done == nil {
+		call.Done = make(chan *Call, 10) // buffered.
+	} else {
+		// If caller passes done != nil, it must arrange that
+		// done has enough buffer for the number of simultaneous
+		// RPCs that will be using that channel. If the channel
+		// is totally unbuffered, it's best not to run at all.
+		if cap(call.Done) == 0 {
+			log.Panic("rpc: done channel is unbuffered")
+		}
+	}
+	p.send(call)
+}
+
 // Go invokes the function asynchronously. It returns the Call structure representing
 // the invocation. The done channel will signal when the call is complete by returning
 // the same Call object. If done is nil, Go will allocate a new channel.
@@ -107,40 +145,50 @@ func (p *client) Go(serviceMethod, args interface{}, reply interface{}, done cha
 	call.SetMethod(serviceMethod)
 	call.Args = args
 	call.Reply = reply
-	if done == nil {
-		done = make(chan *Call, 10) // buffered.
-	} else {
-		// If caller passes done != nil, it must arrange that
-		// done has enough buffer for the number of simultaneous
-		// RPCs that will be using that channel. If the channel
-		// is totally unbuffered, it's best not to run at all.
-		if cap(done) == 0 {
-			log.Panic("rpc: done channel is unbuffered")
-		}
-	}
 	call.Done = done
-	p.send(call)
+	p.SendCall(call)
 	return call
 }
 
-// Call invokes the named function, waits for it to complete, and returns its error status.
-func (p *client) Call(serviceMethod, args, reply interface{}) error {
-	call := <-p.Go(serviceMethod, args, reply, make(chan *Call, 1)).Done
-	return call.Err()
+func (p *client) CallWithContext(ctx context.Context,
+	serviceMethod, args, reply interface{}) error {
+	call := p.Go(serviceMethod, args, reply, make(chan *Call, 1))
+	if ctx == nil {
+		<-call.Done
+		return call.Err()
+	}
+	select {
+	case <-call.Done:
+		return call.Err()
+	case <-ctx.Done():
+		p.ForceClean(call)
+		return ctx.Err()
+	}
 }
 
-func (p *client) CallAsync(serviceMethod, args, reply interface{}, cb func(error)) {
-	p.CallAsyncWithCall(serviceMethod, args, reply, func(cl *Call) { cb(cl.Err()) })
-}
-
-func (p *client) CallAsyncWithCall(serviceMethod, args, reply interface{}, cb func(*Call)) {
+func (p *client) CallAsyncWithContext(ctx context.Context,
+	serviceMethod, args, reply interface{}, cb func(context.Context, error)) {
 	call := new(Call)
 	call.SetMethod(serviceMethod)
 	call.Args = args
 	call.Reply = reply
 	call.Done = make(chan *Call, 1)
-	call.cb = cb
+	call.Callback = cb
+	call.ctx = ctx
 	p.send(call)
+	if ctx == nil {
+		return
+	}
+}
+
+// Call invokes the named function, waits for it to complete, and returns its error status.
+func (p *client) Call(serviceMethod, args, reply interface{}) error {
+	return p.CallWithContext(nil, serviceMethod, args, reply)
+}
+
+func (p *client) CallAsync(serviceMethod, args, reply interface{}, cb func(error)) {
+	p.CallAsyncWithContext(nil, serviceMethod, args, reply,
+		func(ctx context.Context, err error) { cb(err) })
 }
 
 func (p *client) CallWithoutReply(serviceMethod, args interface{}) error {
@@ -150,30 +198,77 @@ func (p *client) CallWithoutReply(serviceMethod, args interface{}) error {
 	return p.codec.WriteRequest(req, args)
 }
 
-func (p *client) send(call *Call) {
+func (p *client) getReq(call *Call) (old *Call, ok bool, err error) {
+	ok = true
 	req := &call.header
 	seq := p.codec.GetSeq(req)
-	req.SetSeq(seq)
 	// Register this call.
+	defer func() {
+	}()
 	p.mutex.Lock()
+	defer p.mutex.Unlock()
 	if p.shutdown || p.closing {
-		p.mutex.Unlock()
-		call.SetErr(ErrClosed)
-		call.done()
+		err = ErrClosed
 		return
 	}
-	p.pending[seq] = call
-	p.mutex.Unlock()
+	old, has := p.pending[seq]
+	if !has {
+		req.SetSeq(seq)
+		p.pending[seq] = call
+		return
+	}
+	if old.ctx == nil {
+		ok = false
+		old = nil
+		return
+	}
+	select {
+	case <-old.ctx.Done():
+		p.pending[seq] = call
+		return
+	default:
+		old = nil
+		ok = false
+	}
+	return
+}
+
+func (p *client) send(call *Call) {
+	var (
+		old *Call
+		ok  bool
+		err error
+	)
+
+	for i := 0; i < 256; i++ {
+		old, ok, err = p.getReq(call)
+		if err != nil {
+			call.done(err)
+			return
+		}
+		if !ok {
+			continue
+		}
+		if old != nil && old.ctx != nil {
+			old.done(old.ctx.Err())
+		}
+		break
+	}
+	if !ok {
+		call.done(ErrNoSpace)
+		return
+	}
+	req := &call.header
+
 	// Encode and send the request.
-	err := p.codec.WriteRequest(req, call.Args)
-	if err != nil {
+	e := p.codec.WriteRequest(req, call.Args)
+	if e != nil {
 		p.mutex.Lock()
-		call = p.pending[seq]
-		delete(p.pending, seq)
+		call = p.pending[req.seq]
+		delete(p.pending, req.seq)
 		p.mutex.Unlock()
 		if call != nil {
-			call.SetErr(err)
-			call.done()
+			call.done(e)
 		}
 	}
 }
@@ -182,7 +277,10 @@ func (p *client) dealResp(rsp Header) (err error) {
 	seq := rsp.Seq()
 	p.mutex.Lock()
 	call := p.pending[seq]
-	delete(p.pending, seq)
+	if p.headChecker == nil ||
+		p.headChecker.CheckHeader(&call.header, rsp) {
+		delete(p.pending, seq)
+	}
 	p.mutex.Unlock()
 
 	switch {
@@ -200,18 +298,17 @@ func (p *client) dealResp(rsp Header) (err error) {
 		// We've got an error response. Give this to the request;
 		// any subsequent requests will get the ReadResponseBody
 		// error if there is one.
-		call.SetErr(rsp.Err())
 		err = p.codec.ReadResponseBody(rsp, nil)
 		if err != nil {
 			err = errors.New("reading error body: " + err.Error())
 		}
-		call.done()
+		call.done(rsp.Err())
 	default:
 		err = p.codec.ReadResponseBody(rsp, call.Reply)
 		if err != nil {
 			call.SetErr(errors.New("reading body " + err.Error()))
 		}
-		call.done()
+		call.done(nil)
 	}
 	return
 }
@@ -233,8 +330,7 @@ func (p *client) dealClose(err error) {
 		}
 	}
 	for _, call := range p.pending {
-		call.SetErr(err)
-		call.done()
+		call.done(err)
 	}
 	if debugLog && err != io.EOF && !closing {
 		log.Println("rpc: p protocol error:", err)
@@ -256,15 +352,33 @@ func (p *client) input() {
 	p.dealClose(err)
 }
 
+func (p *client) ForceClean(serviceMethod interface{}) bool {
+	p.mutex.Lock()
+	_, ok := p.pending[serviceMethod]
+	if ok {
+		delete(p.pending, serviceMethod)
+	}
+	p.mutex.Unlock()
+	return ok
+}
+
 // If set, print log statements for internal and I/O errors.
 var debugLog = false
 
-func (call *Call) done() {
+func (call *Call) done(err error) {
+	if !atomic.CompareAndSwapInt32(&call.doned, 0, 1) {
+		return
+	}
+	if err != nil {
+		call.err = err
+	} else if call.err == nil && call.ctx != nil {
+		call.err = call.ctx.Err()
+	}
 	select {
 	case call.Done <- call:
 		// ok
-		if call.cb != nil {
-			call.cb(call)
+		if call.Callback != nil {
+			call.Callback(call.ctx, call.err)
 		}
 	default:
 		// We don't want to block here. It is the caller's responsibility to make

@@ -6,6 +6,6 @@ import (
 )
 
 var (
-	// ErrClosed ...
-	ErrClosed = fmt.Errorf("closed: [%w]", io.ErrClosedPipe)
+	ErrClosed  = fmt.Errorf("%w closed", io.ErrClosedPipe)
+	ErrNoSpace = fmt.Errorf("gorpc: client no space")
 )

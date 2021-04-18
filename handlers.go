@@ -30,10 +30,8 @@
 package gorpc
 
 import (
-	"errors"
 	"fmt"
 	"log"
-	"os"
 	"reflect"
 	"unicode"
 	"unicode/utf8"
@@ -41,24 +39,39 @@ import (
 
 // Handlers ...
 type Handlers struct {
-	handlers map[interface{}]*service
+	handlers map[interface{}]Service
 }
 
 // NewHandlers ...
 func NewHandlers() *Handlers {
 	return &Handlers{
-		handlers: make(map[interface{}]*service),
+		handlers: make(map[interface{}]Service),
 	}
 }
 
 // Register ...
 func (p *Handlers) Register(serviceMethod interface{}, rcvr interface{}) error {
-	s, e := newService(rcvr)
+	ss, ok := rcvr.(SyncService)
+	if ok {
+		p.handlers[serviceMethod] = ss
+		return nil
+	}
+	as, ok := rcvr.(AsyncService)
+	if ok {
+		p.handlers[serviceMethod] = as
+		return nil
+	}
+	s, e := FuncToService(rcvr)
 	if e != nil {
 		return e
 	}
 	p.handlers[serviceMethod] = s
 	return nil
+}
+
+func (p *Handlers) Get(serviceMethod interface{}) (Service, bool) {
+	s, ok := p.handlers[serviceMethod]
+	return s, ok
 }
 
 func (p *Handlers) Has(serviceMethod interface{}) bool {
@@ -70,17 +83,21 @@ func (p *Handlers) Del(serviceMethod interface{}) {
 	delete(p.handlers, serviceMethod)
 }
 
-func (p *Handlers) Range(f func(serviceMethod interface{}, rcvr reflect.Value) bool) {
+func (p *Handlers) Clone() *Handlers {
+	d := NewHandlers()
 	for k, v := range p.handlers {
-		if !f(k, v.rcvr) {
-			break
-		}
+		d.handlers[k] = v
 	}
+	return d
 }
 
-func (p *Handlers) CheckContext(ctx reflect.Type) (err error) {
+func (p *Handlers) CheckContext(ctx interface{}) (err error) {
 	for k, v := range p.handlers {
-		err = v.fType.checkContext(ctx)
+		c, ok := v.(ServiceCheckContext)
+		if !ok {
+			continue
+		}
+		err = c.CheckContext(ctx)
 		if err != nil {
 			err = fmt.Errorf("[%w] method: %v", err, k)
 			break
@@ -95,84 +112,6 @@ type funcType struct {
 	ReplyType reflect.Type
 	numIn     int
 	noReply   bool
-}
-
-func (p *funcType) getArgv() (argv reflect.Value) {
-	// Decode the argument value.
-	if p.ArgType.Kind() == reflect.Ptr {
-		argv = reflect.New(p.ArgType.Elem())
-		return
-	}
-	argv = reflect.New(p.ArgType)
-	return
-}
-
-func (p *funcType) getReplyv() (replyv reflect.Value) {
-	replyv = reflect.New(p.ReplyType.Elem())
-	switch p.ReplyType.Elem().Kind() {
-	case reflect.Map:
-		replyv.Elem().Set(reflect.MakeMap(p.ReplyType.Elem()))
-	case reflect.Slice:
-		replyv.Elem().Set(reflect.MakeSlice(p.ReplyType.Elem(), 0, 0))
-	}
-	return
-}
-
-func (p *funcType) call(argv, replyv, ctx reflect.Value) (reply interface{}, err error) {
-	// if true, need to indirect before calling.
-	if p.ArgType.Kind() != reflect.Ptr {
-		argv = argv.Elem()
-	}
-	function := p.funcValue
-	// Invoke the method, providing a new value for the reply.
-	values := []reflect.Value{argv, replyv, ctx}
-	returnValues := function.Call(values[:p.numIn])
-	if p.noReply {
-		return
-	}
-	// The return value for the method is an error.
-	errInter := returnValues[0].Interface()
-	if errInter != nil {
-		err = errInter.(error)
-		return
-	}
-	reply = replyv.Interface()
-	return
-}
-
-func (p *funcType) checkContext(ctx reflect.Type) (err error) {
-	if p.numIn < 3 {
-		return
-	}
-	mt := p.funcValue.Type().In(2)
-	if ctx.ConvertibleTo(mt) {
-		return
-	}
-	err = fmt.Errorf("[%w] context' type is %v, but funcType's 3d type is %v",
-		os.ErrInvalid, ctx, mt)
-	return
-}
-
-type service struct {
-	rcvr  reflect.Value // receiver of methods for the service
-	typ   reflect.Type  // type of the receiver
-	fType *funcType     // registered methods
-}
-
-func newService(rcvr interface{}) (s *service, err error) {
-	s = new(service)
-	s.typ = reflect.TypeOf(rcvr)
-	s.rcvr = reflect.ValueOf(rcvr)
-	// Install the methods
-	s.fType, err = suitableFuncValue(s.rcvr, false)
-
-	sname := reflect.Indirect(s.rcvr).Type().Name()
-	if err != nil {
-		str := "rpc.Register: type " + sname + " not suitable type"
-		err = errors.New(str)
-		return
-	}
-	return
 }
 
 func suitableFuncValue(funcValue reflect.Value, reportErr bool) (ft *funcType, err error) {
